@@ -1,0 +1,42 @@
+{
+  "name": "claude-code-proxy",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker proxy for Anthropic Claude API to Vercel AI SDK",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler build",
+    "test": "vitest",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/google": "^2.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "@ai-sdk/xai": "^2.0.0",
+    "ai": "^5.0.0",
+    "hono": "^4.8.12",
+    "uuid": "^11.1.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-code": "^1.0.67",
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0",
+    "vitest-environment-miniflare": "^2.14.4",
+    "wrangler": "^3.0.0"
+  },
+  "keywords": [
+    "claude code",
+    "anthropic",
+    "proxy",
+    "cloudflare",
+    "worker",
+    "ai"
+  ],
+  "author": "https://github.com/brianhung",
+  "license": "MIT"
+}
