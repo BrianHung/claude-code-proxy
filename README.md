@@ -22,9 +22,14 @@ Configure environment variables in `wrangler.toml`:
 ```toml
 [vars]
 OPENAI_API_KEY = "your-openai-key"
+ANTHROPIC_API_KEY = "your-anthropic-key"
+GOOGLE_GENERATIVE_AI_API_KEY = "your-google-key"
+XAI_API_KEY = "your-xai-key"
+
 HAIKU_MODEL_ID = "openai:gpt-4o-mini"
 SONNET_MODEL_ID = "openai:gpt-4o-mini"
 OPUS_MODEL_ID = "openai:gpt-4o-mini"
+
 DEBUG = "true"
 ```
 
@@ -45,10 +50,19 @@ claude "Hello world"
 
 ```bash
 npx wrangler login
+
+# Set API keys
 npx wrangler secret put OPENAI_API_KEY
-npx wrangler secret put HAIKU_MODEL_ID    # openai:gpt-4o-mini
-npx wrangler secret put SONNET_MODEL_ID   # openai:gpt-4o-mini
-npx wrangler secret put OPUS_MODEL_ID     # openai:gpt-4o-mini
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put GOOGLE_GENERATIVE_AI_API_KEY
+npx wrangler secret put XAI_API_KEY
+
+# Set model overrides
+npx wrangler secret put HAIKU_MODEL_ID
+npx wrangler secret put SONNET_MODEL_ID
+npx wrangler secret put OPUS_MODEL_ID
+
+# Deploy
 npm run deploy
 ```
 
