@@ -1,15 +1,25 @@
 name = "claude-code-proxy"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
-compatibility_flags = ["nodejs_compat"]
+
+# Enable environment variables process.env support.
+# https://developers.cloudflare.com/changelog/2025-03-11-process-env-support/
+compatibility_date = "2025-04-01"
+compatibility_flags = [
+  "nodejs_compat",
+  "nodejs_compat_populate_process_env",
+]
 
 [vars]
 # Environment variables for development
 # WARNING: Remove all real API keys before committing to version control!
 # Production secrets should be set using: wrangler secret put ANTHROPIC_API_KEY
-# OPENAI_API_KEY = "your-key-here"
 
-# Map all Claude models to GPT-4o-mini
+# API KEYS
+# OPENAI_API_KEY = "sk-proj-..."
+# OPENAI_API_BASE = "https://api.openai.com/v1"
+# ANTHROPIC_API_KEY = "sky-ant-..."
+
+# MODEL OVERRIDES
 # HAIKU_MODEL_ID = "openai:gpt-4o-mini"
 # SONNET_MODEL_ID = "openai:gpt-4o-mini"
 # OPUS_MODEL_ID = "openai:gpt-4o-mini"

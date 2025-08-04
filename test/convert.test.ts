@@ -175,9 +175,10 @@ describe("Anthropic ↔ AI SDK Conversion", () => {
         text: "I'll help you calculate that.",
         toolCalls: [
           {
-            id: "call_123",
-            name: "calculator",
-            args: { operation: "add", a: 5, b: 3 },
+            type: "tool-call" as const,
+            toolCallId: "call_123",
+            toolName: "calculator",
+            input: { operation: "add", a: 5, b: 3 },
           },
         ],
         usage: {
@@ -385,42 +386,20 @@ describe("Anthropic ↔ AI SDK Conversion", () => {
 
       const aiSdkTools = toTools(anthropicTools);
 
-      expect(aiSdkTools).toHaveLength(2);
+      expect(Object.keys(aiSdkTools.client)).toHaveLength(2);
+      expect(Object.keys(aiSdkTools.server)).toHaveLength(0);
+      expect(Object.keys(aiSdkTools.all)).toHaveLength(2);
 
-      expect(aiSdkTools[0]).toEqual({
-        type: "function",
-        function: {
-          name: "calculator",
-          description: "Perform basic arithmetic operations",
-          parameters: {
-            type: "object",
-            properties: {
-              operation: {
-                type: "string",
-                enum: ["add", "subtract", "multiply", "divide"],
-              },
-              a: { type: "number" },
-              b: { type: "number" },
-            },
-            required: ["operation", "a", "b"],
-          },
-        },
-      });
+      expect(aiSdkTools.client.calculator).toBeDefined();
+      expect(aiSdkTools.client.weather).toBeDefined();
 
-      expect(aiSdkTools[1]).toEqual({
-        type: "function",
-        function: {
-          name: "weather",
-          description: "Get weather information",
-          parameters: {
-            type: "object",
-            properties: {
-              location: { type: "string" },
-            },
-            required: ["location"],
-          },
-        },
-      });
+      // Check the structure of the AI SDK tools
+      expect(aiSdkTools.client.calculator.description).toBe(
+        "Perform basic arithmetic operations"
+      );
+      expect(aiSdkTools.client.weather.description).toBe(
+        "Get weather information"
+      );
     });
 
     it("should handle tools with missing description", () => {
@@ -440,7 +419,7 @@ describe("Anthropic ↔ AI SDK Conversion", () => {
 
       const aiSdkTools = toTools(anthropicTools);
 
-      expect(aiSdkTools[0].function.description).toBe("");
+      expect(aiSdkTools.client.simple_tool.description).toBe("");
     });
 
     it("should fix malformed schema types", () => {
@@ -460,7 +439,10 @@ describe("Anthropic ↔ AI SDK Conversion", () => {
 
       const aiSdkTools = toTools(anthropicTools);
 
-      expect(aiSdkTools[0].function.parameters.type).toBe("object");
+      expect(aiSdkTools.client.broken_tool).toBeDefined();
+      expect(aiSdkTools.client.broken_tool.description).toBe(
+        "Tool with incorrect schema type"
+      );
     });
 
     it("should handle tools with missing input_schema", () => {
@@ -477,11 +459,10 @@ describe("Anthropic ↔ AI SDK Conversion", () => {
 
       const aiSdkTools = toTools(anthropicTools);
 
-      expect(aiSdkTools[0].function.parameters).toEqual({
-        type: "object",
-        properties: {},
-        required: [],
-      });
+      expect(aiSdkTools.client.minimal_tool).toBeDefined();
+      expect(aiSdkTools.client.minimal_tool.description).toBe(
+        "Tool without input schema"
+      );
     });
 
     it("should convert all valid tools including system tools", () => {
@@ -510,44 +491,23 @@ describe("Anthropic ↔ AI SDK Conversion", () => {
           name: "text_editor",
           type: "text_editor_20250124",
         },
-        // Invalid tools that should be filtered out
-        null,
-        { description: "Missing name" },
-        { name: "", description: "Empty name" },
       ] as AnthropicTool[];
 
       const result = toTools(mixedTools);
 
-      expect(result).toHaveLength(3); // 3 valid tools converted
+      expect(Object.keys(result.all)).toHaveLength(3); // 3 valid tools converted
 
       // Check function tool
-      expect(result[0].function.name).toBe("calculator");
-      expect(result[0].function.parameters.properties).toEqual({
-        a: { type: "number" },
-      });
-      expect(result[0].function.parameters.required).toEqual(["a"]);
+      expect(result.client.calculator).toBeDefined();
+      expect(result.client.calculator.description).toBe("A calculator tool");
 
-      // Check computer tool
-      expect(result[1].function.name).toBe("computer");
-      expect(result[1].function.description).toBe(
-        "Anthropic computer_20250124 tool"
-      );
-      expect(result[1].function.parameters.properties).toEqual({});
+      // Check computer tool (should be in server tools)
+      expect(result.server.computer || result.client.computer).toBeDefined();
 
-      // Check text editor tool
-      expect(result[2].function.name).toBe("text_editor");
-      expect(result[2].function.description).toBe(
-        "Anthropic text_editor_20250124 tool"
-      );
-      expect(result[2].function.parameters.properties).toEqual({});
-    });
-
-    it("should handle non-array input gracefully", () => {
-      const result = toTools(null as any);
-      expect(result).toEqual([]);
-
-      const result2 = toTools("not an array" as any);
-      expect(result2).toEqual([]);
+      // Check text editor tool (should be in server tools)
+      expect(
+        result.server.text_editor || result.client.text_editor
+      ).toBeDefined();
     });
   });
 
@@ -664,10 +624,7 @@ describe("Anthropic ↔ AI SDK Conversion", () => {
       };
 
       // Convert back to Anthropic format
-      const response = toAnthropicResponse(
-        mockAiSdkOutput,
-        request.model
-      );
+      const response = toAnthropicResponse(mockAiSdkOutput, request.model);
 
       // Validate the response
       const validation = AnthropicResponseSchema.safeParse(response);

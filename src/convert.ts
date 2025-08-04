@@ -7,6 +7,7 @@ import type {
   Tool,
 } from "ai";
 import { tool, jsonSchema } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { v4 as uuid } from "uuid";
 
 import type {
@@ -27,6 +28,19 @@ export {
   type AnthropicMessage,
   type AnthropicContentBlock,
 } from "./schemas";
+
+/**
+ * Generate Anthropic-style message ID
+ * Format: msg_{timestamp}_{8 random lowercase alphanumeric chars}
+ */
+function generateAnthropicId(): string {
+  const timestamp = Date.now();
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const randomSuffix = Array.from({ length: 8 }, () =>
+    chars.charAt(Math.floor(Math.random() * chars.length))
+  ).join("");
+  return `msg_${timestamp}_${randomSuffix}`;
+}
 
 const VALID_ANTHROPIC_ROLES = ["user", "assistant"] as const;
 
@@ -347,9 +361,15 @@ export function toAnthropicResponse(
     for (const toolCall of coreOutput.toolCalls) {
       content.push({
         type: "tool_use",
-        id: toolCall.toolCallId || "toolu_" + uuid(),
-        name: toolCall.toolName,
-        input: toolCall.input as Record<string, any>,
+        id:
+          (toolCall as any).toolCallId ||
+          (toolCall as any).id ||
+          "toolu_" + uuid(),
+        name: (toolCall as any).toolName || (toolCall as any).name,
+        input: ((toolCall as any).input || (toolCall as any).args) as Record<
+          string,
+          any
+        >,
       });
     }
   }
@@ -357,7 +377,7 @@ export function toAnthropicResponse(
   const usage = buildUsageObject(coreOutput.usage);
 
   return {
-    id: requestId || "msg_" + uuid(),
+    id: requestId || generateAnthropicId(),
     type: "message",
     role: "assistant",
     content,
@@ -399,23 +419,51 @@ export function normalizeToAnthropicMessages(
   }));
 }
 
+const SERVER_TOOLS = new Set(["web_search"]);
+
+const TYPE_TO_TOOL = {
+  web_search_20250305: anthropic.tools.webSearch_20250305,
+  bash_20241022: anthropic.tools.bash_20241022,
+  bash_20250124: anthropic.tools.bash_20250124,
+  computer_20241022: anthropic.tools.computer_20241022,
+  computer_20250124: anthropic.tools.computer_20250124,
+  text_editor_20241022: anthropic.tools.textEditor_20241022,
+  text_editor_20250429: anthropic.tools.textEditor_20250429,
+  text_editor_20250124: anthropic.tools.textEditor_20250124,
+} as const;
+
 /**
  * Convert Anthropic tools to AI SDK tools
- * Only converts function tools with input_schema
  */
-export function toTools(tools: AnthropicTool[]): Record<string, Tool> {
-  const result: Record<string, Tool> = {};
+export function toTools(tools: AnthropicTool[] = []): {
+  client: Record<string, Tool>;
+  server: Record<string, Tool>;
+  all: Record<string, Tool>;
+} {
+  const client: Record<string, Tool> = {};
+  const server: Record<string, Tool> = {};
   tools.forEach((t) => {
     if ("input_schema" in t) {
-      result[t.name] = tool({
+      client[t.name] = tool({
         description: t.description || "",
         inputSchema: jsonSchema(t.input_schema),
       });
     } else {
-      console.warn("Skipping system tool:", t);
+      // Anthropic system tools
+      const toolSet = SERVER_TOOLS.has(t.name) ? server : client;
+      toolSet[t.name] = TYPE_TO_TOOL[t.type](t as any);
     }
   });
-  return result;
+  return {
+    client,
+    server,
+    get all() {
+      return {
+        ...client,
+        ...server,
+      };
+    },
+  };
 }
 
 /**
@@ -424,17 +472,17 @@ export function toTools(tools: AnthropicTool[]): Record<string, Tool> {
  * via environment variable configuration for cost optimization or availability
  */
 export function resolveModelId(
-  modelId: AnthropicModelId,
-  env: {
+  modelOverrides: {
     HAIKU_MODEL_ID?: string;
     SONNET_MODEL_ID?: string;
     OPUS_MODEL_ID?: string;
-  }
+  },
+  modelId: AnthropicModelId
 ): string {
   const overrides: Array<[string, string | undefined]> = [
-    ["haiku", env.HAIKU_MODEL_ID],
-    ["sonnet", env.SONNET_MODEL_ID],
-    ["opus", env.OPUS_MODEL_ID],
+    ["haiku", modelOverrides.HAIKU_MODEL_ID],
+    ["sonnet", modelOverrides.SONNET_MODEL_ID],
+    ["opus", modelOverrides.OPUS_MODEL_ID],
   ];
 
   for (const [keyword, override] of overrides) {
@@ -457,6 +505,7 @@ export function toAnthropicStream(model: string) {
   let contentIndex = 0;
   let isContentOpen = false;
   let currentToolId: string | null = null;
+  let currentWebSearchToolId: string | null = null;
   let finishReason: string = "stop";
   let outputTokens = 0;
   let textBlockStarted = false;
@@ -515,10 +564,7 @@ export function toAnthropicStream(model: string) {
       textBlockStarted = true;
     },
 
-    transform(
-      part: any,
-      controller: TransformStreamDefaultController<Uint8Array>
-    ) {
+    transform(part, controller: TransformStreamDefaultController<Uint8Array>) {
       switch (part.type) {
         case "text-start":
           hasTextContent = true;
@@ -710,6 +756,12 @@ export function toAnthropicStream(model: string) {
 
           contentIndex++;
           seenToolIds.add(toolCallId);
+
+          // Track web search tool calls for source event association
+          if (part.toolName === "web_search") {
+            currentWebSearchToolId = toolCallId;
+          }
+
           controller.enqueue(
             encoder.encode(
               `event: content_block_start\ndata: ${JSON.stringify({
@@ -768,6 +820,79 @@ export function toAnthropicStream(model: string) {
 
         case "abort":
           console.warn("Stream aborted");
+          break;
+
+        case "source":
+          // Handle web search source results from Vercel AI SDK
+          if (part.sourceType === "url") {
+            // Use current web search tool ID or generate one if not available
+            const toolUseId = currentWebSearchToolId || `web_search_${uuid()}`;
+
+            // Close text block if open to make room for web search result
+            if (textBlockStarted && !textBlockClosed) {
+              controller.enqueue(
+                encoder.encode(
+                  `event: content_block_stop\ndata: ${JSON.stringify({
+                    type: "content_block_stop",
+                    index: hasTextContent
+                      ? textBlockClosed
+                        ? contentIndex
+                        : 0
+                      : 0,
+                  })}\n\n`
+                )
+              );
+              textBlockClosed = true;
+            }
+
+            contentIndex++;
+
+            // Extract encrypted content from provider metadata if available
+            const anthropicMetadata = part.providerMetadata?.anthropic;
+            const encryptedContent =
+              anthropicMetadata?.encrypted_content ||
+              anthropicMetadata?.content ||
+              part.url; // Fallback to URL
+            const pageAge = anthropicMetadata?.page_age || null;
+
+            // Create web search tool result content block
+            controller.enqueue(
+              encoder.encode(
+                `event: content_block_start\ndata: ${JSON.stringify({
+                  type: "content_block_start",
+                  index: contentIndex,
+                  content_block: {
+                    type: "web_search_tool_result",
+                    tool_use_id: toolUseId,
+                    content: [
+                      {
+                        type: "web_search_result",
+                        url: part.url,
+                        title: part.title,
+                        page_age: pageAge,
+                        encrypted_content: encryptedContent,
+                      },
+                    ],
+                  },
+                })}\n\n`
+              )
+            );
+
+            controller.enqueue(
+              encoder.encode(
+                `event: content_block_stop\ndata: ${JSON.stringify({
+                  type: "content_block_stop",
+                  index: contentIndex,
+                })}\n\n`
+              )
+            );
+          } else {
+            console.warn(
+              "Received source event with unsupported sourceType:",
+              part.sourceType,
+              part
+            );
+          }
           break;
 
         default:

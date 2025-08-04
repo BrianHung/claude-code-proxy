@@ -102,6 +102,13 @@ SONNET_MODEL_ID = "anthropic:claude-3-5-sonnet-20241022"
 OPUS_MODEL_ID = "openai:gpt-4o"
 ```
 
+## Web Search Support
+
+The proxy supports web search functionality, which is available as both an Anthropic system tool and a server tool. The routing behavior depends on your API key configuration:
+
+- **With ANTHROPIC_API_KEY configured**: Web search requests are re-routed to the original Anthropic model ID to leverage Anthropic's native web search capabilities
+- **Without ANTHROPIC_API_KEY**: Web search requests are are not handled
+
 ## API Usage
 
 ### Basic Request
@@ -128,14 +135,6 @@ curl -X POST http://localhost:8787/v1/messages \
     "stream": true
   }'
 ```
-
-## Limitations
-
-**Unsupported Features:**
-
-- Websearch and other Anthropic system tools are not supported at this time
-- Computer use tools are not supported
-- Some advanced Anthropic-specific features may not work correctly when proxied to other providers
 
 ## Commands
 
