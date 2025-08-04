@@ -7,18 +7,21 @@ import type {
   Tool,
 } from "ai";
 import { tool, jsonSchema } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 import { v4 as uuid } from "uuid";
 
-import {
-  type AnthropicResponse,
-  type AnthropicMessage,
-  type AnthropicContentBlock,
-  type AnthropicApiRequest,
+import type {
+  AnthropicResponse,
+  AnthropicMessage,
+  AnthropicContentBlock,
+  AnthropicApiRequest,
 } from "./schemas";
 
-import { type AnthropicTool, type AnthropicModelId } from "./types";
-
-
+import type {
+  AnthropicTool,
+  AnthropicModelId,
+  AnthropicToolChoice,
+} from "./types";
 
 export {
   type AnthropicResponse,
@@ -26,15 +29,21 @@ export {
   type AnthropicContentBlock,
 } from "./schemas";
 
-const VALID_ANTHROPIC_ROLES = ["user", "assistant"] as const;
-const ID_PREFIX = {
-  TOOL: "toolu_",
-  MESSAGE: "msg_",
-} as const;
-
 /**
- * Maps AI SDK finish reasons to Anthropic API stop reasons
+ * Generate Anthropic-style message ID
+ * Format: msg_{timestamp}_{8 random lowercase alphanumeric chars}
  */
+function generateAnthropicId(): string {
+  const timestamp = Date.now();
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const randomSuffix = Array.from({ length: 8 }, () =>
+    chars.charAt(Math.floor(Math.random() * chars.length))
+  ).join("");
+  return `msg_${timestamp}_${randomSuffix}`;
+}
+
+const VALID_ANTHROPIC_ROLES = ["user", "assistant"] as const;
+
 const FINISH_REASON_MAP = {
   stop: "end_turn",
   length: "max_tokens",
@@ -44,24 +53,6 @@ const FINISH_REASON_MAP = {
 } as const;
 
 const DEFAULT_FINISH_REASON = "end_turn" as const;
-
-// ========== AI SDK TOOL TYPES ==========
-
-/**
- * AI SDK tool format for function calling
- */
-export interface AiSdkTool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: "object";
-      properties: Record<string, any>;
-      required: string[];
-    };
-  };
-}
 
 /**
  * Map finish reasons from AI SDK to official Anthropic format
@@ -83,7 +74,7 @@ function normalizeContentToArray<T>(content: string | T[]): T[] {
 /**
  * Extract system content from Anthropic system field
  */
-function extractSystemContent(system: AnthropicApiRequest["system"]): string {
+function toSystemContent(system: AnthropicApiRequest["system"]): string {
   if (typeof system === "string") {
     return system;
   }
@@ -167,8 +158,6 @@ function processAssistantContentBlocks(
   const assistantContent: (TextPart | ToolCallPart)[] = [];
   const seenToolIds = new Set<string>();
 
-
-
   for (const block of content) {
     if (block.type === "text") {
       assistantContent.push({ type: "text", text: block.text });
@@ -201,8 +190,32 @@ function processAssistantContentBlocks(
     }
   }
 
-
   return assistantContent;
+}
+
+const TOOL_CHOICE_MAP = {
+  auto: "auto",
+  any: "required",
+  tool: (name: string) => ({ type: "tool", toolName: name }),
+} as const;
+
+/**
+ * Convert Anthropic tool choice to AI SDK format using standardized mappings
+ */
+export function toToolChoice(toolChoice?: AnthropicToolChoice): any {
+  if (!toolChoice) return undefined;
+  switch (toolChoice.type) {
+    case "auto":
+      return TOOL_CHOICE_MAP.auto;
+    case "any":
+      return TOOL_CHOICE_MAP.any;
+    case "tool":
+      return toolChoice.name
+        ? TOOL_CHOICE_MAP.tool(toolChoice.name)
+        : undefined;
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -212,13 +225,11 @@ function extractToolContext(
   content: AnthropicContentBlock[]
 ): Map<string, string> {
   const toolContext = new Map<string, string>();
-
   for (const block of content) {
     if (block.type === "tool_use") {
       toolContext.set(block.id, block.name);
     }
   }
-
   return toolContext;
 }
 
@@ -254,7 +265,7 @@ function buildUsageObject(usage?: {
  * Handles system prompts, text, images, tool uses, and tool results
  * Uses single-pass approach leveraging the alternating user-assistant pattern
  */
-export function convertAnthropicToCoreMessages(
+export function toModelMessages(
   request: AnthropicApiRequest,
   availableTools?: Set<string>
 ): ModelMessage[] {
@@ -265,7 +276,7 @@ export function convertAnthropicToCoreMessages(
 
   // Add system message if present
   if (request.system) {
-    const systemContent = extractSystemContent(request.system);
+    const systemContent = toSystemContent(request.system);
     modelMessages.push({
       role: "system",
       content: systemContent,
@@ -273,12 +284,11 @@ export function convertAnthropicToCoreMessages(
   }
 
   // Single pass: process messages in order, maintaining tool context
-  for (const [i, msg] of request.messages.entries()) {
+  for (const msg of request.messages.values()) {
     if (msg.role === "user") {
       const content = normalizeContentToArray<AnthropicContentBlock>(
         msg.content
       );
-
 
       const { userContent, toolMessages } = processUserContentBlocks(
         content,
@@ -297,7 +307,6 @@ export function convertAnthropicToCoreMessages(
       const content = normalizeContentToArray<AnthropicContentBlock>(
         msg.content
       );
-
 
       // Update tool context for the next user message's tool_result blocks
       currentToolContext = extractToolContext(content);
@@ -318,8 +327,6 @@ export function convertAnthropicToCoreMessages(
     }
   }
 
-
-
   return modelMessages;
 }
 
@@ -327,7 +334,7 @@ export function convertAnthropicToCoreMessages(
  * Convert AI SDK output back to Anthropic response format
  * Handles text, tool calls, usage, and stop reasons
  */
-export function convertCoreToAnthropicResponse(
+export function toAnthropicResponse(
   coreOutput: {
     text?: string;
     toolCalls?: Array<ToolCallPart>;
@@ -354,9 +361,15 @@ export function convertCoreToAnthropicResponse(
     for (const toolCall of coreOutput.toolCalls) {
       content.push({
         type: "tool_use",
-        id: toolCall.toolCallId || "toolu_" + uuid(),
-        name: toolCall.toolName,
-        input: toolCall.input as Record<string, any>,
+        id:
+          (toolCall as any).toolCallId ||
+          (toolCall as any).id ||
+          "toolu_" + uuid(),
+        name: (toolCall as any).toolName || (toolCall as any).name,
+        input: ((toolCall as any).input || (toolCall as any).args) as Record<
+          string,
+          any
+        >,
       });
     }
   }
@@ -364,7 +377,7 @@ export function convertCoreToAnthropicResponse(
   const usage = buildUsageObject(coreOutput.usage);
 
   return {
-    id: requestId || "msg_" + uuid(),
+    id: requestId || generateAnthropicId(),
     type: "message",
     role: "assistant",
     content,
@@ -406,25 +419,51 @@ export function normalizeToAnthropicMessages(
   }));
 }
 
+const SERVER_TOOLS = new Set(["web_search"]);
+
+const TYPE_TO_TOOL = {
+  web_search_20250305: anthropic.tools.webSearch_20250305,
+  bash_20241022: anthropic.tools.bash_20241022,
+  bash_20250124: anthropic.tools.bash_20250124,
+  computer_20241022: anthropic.tools.computer_20241022,
+  computer_20250124: anthropic.tools.computer_20250124,
+  text_editor_20241022: anthropic.tools.textEditor_20241022,
+  text_editor_20250429: anthropic.tools.textEditor_20250429,
+  text_editor_20250124: anthropic.tools.textEditor_20250124,
+} as const;
+
 /**
  * Convert Anthropic tools to AI SDK tools
- * Only converts function tools with input_schema
  */
-export function convertAnthropicTool(
-  tools: AnthropicTool[]
-): Record<string, Tool> {
-  const result: Record<string, Tool> = {};
+export function toTools(tools: AnthropicTool[] = []): {
+  client: Record<string, Tool>;
+  server: Record<string, Tool>;
+  all: Record<string, Tool>;
+} {
+  const client: Record<string, Tool> = {};
+  const server: Record<string, Tool> = {};
   tools.forEach((t) => {
-    if ("input_schema" in t && t.input_schema) {
-      result[t.name] = tool({
+    if ("input_schema" in t) {
+      client[t.name] = tool({
         description: t.description || "",
         inputSchema: jsonSchema(t.input_schema),
       });
     } else {
-      console.warn("Skipping system tool:", t);
+      // Anthropic system tools
+      const toolSet = SERVER_TOOLS.has(t.name) ? server : client;
+      toolSet[t.name] = TYPE_TO_TOOL[t.type](t as any);
     }
   });
-  return result;
+  return {
+    client,
+    server,
+    get all() {
+      return {
+        ...client,
+        ...server,
+      };
+    },
+  };
 }
 
 /**
@@ -433,28 +472,26 @@ export function convertAnthropicTool(
  * via environment variable configuration for cost optimization or availability
  */
 export function resolveModelId(
-  modelId: AnthropicModelId, 
-  env: {
+  modelOverrides: {
     HAIKU_MODEL_ID?: string;
     SONNET_MODEL_ID?: string;
     OPUS_MODEL_ID?: string;
-  }
+  },
+  modelId: AnthropicModelId
 ): string {
-  // Check for Claude model families and map to configured alternatives
-  if (modelId.includes("haiku")) {
-    const resolved = env.HAIKU_MODEL_ID;
-    if (resolved) return resolved;
-  }
-  if (modelId.includes("sonnet")) {
-    const resolved = env.SONNET_MODEL_ID;
-    if (resolved) return resolved;
-  }
-  if (modelId.includes("opus")) {
-    const resolved = env.OPUS_MODEL_ID;
-    if (resolved) return resolved;
+  const overrides: Array<[string, string | undefined]> = [
+    ["haiku", modelOverrides.HAIKU_MODEL_ID],
+    ["sonnet", modelOverrides.SONNET_MODEL_ID],
+    ["opus", modelOverrides.OPUS_MODEL_ID],
+  ];
+
+  for (const [keyword, override] of overrides) {
+    if (modelId.includes(keyword) && override) {
+      return override;
+    }
   }
 
-  // Fallback: use actual Anthropic model via Vercel AI SDK
+  // Fallback: use the original Anthropic model via the Vercel AI SDK
   return `anthropic:${modelId}`;
 }
 
@@ -464,15 +501,19 @@ export function resolveModelId(
 export function toAnthropicStream(model: string) {
   const encoder = new TextEncoder();
   const messageId = uuid();
+
   let contentIndex = 0;
   let isContentOpen = false;
   let currentToolId: string | null = null;
+  let currentWebSearchToolId: string | null = null;
   let finishReason: string = "stop";
   let outputTokens = 0;
   let textBlockStarted = false;
   let textBlockClosed = false;
   let hasTextContent = false;
-  const seenToolIds = new Set<string>(); // Track tool IDs to prevent duplicates
+
+  // Track tool IDs to prevent duplicates
+  const seenToolIds = new Set<string>();
 
   return new TransformStream({
     start(controller: TransformStreamDefaultController<Uint8Array>) {
@@ -523,10 +564,7 @@ export function toAnthropicStream(model: string) {
       textBlockStarted = true;
     },
 
-    transform(
-      part: any,
-      controller: TransformStreamDefaultController<Uint8Array>
-    ) {
+    transform(part, controller: TransformStreamDefaultController<Uint8Array>) {
       switch (part.type) {
         case "text-start":
           hasTextContent = true;
@@ -718,6 +756,12 @@ export function toAnthropicStream(model: string) {
 
           contentIndex++;
           seenToolIds.add(toolCallId);
+
+          // Track web search tool calls for source event association
+          if (part.toolName === "web_search") {
+            currentWebSearchToolId = toolCallId;
+          }
+
           controller.enqueue(
             encoder.encode(
               `event: content_block_start\ndata: ${JSON.stringify({
@@ -778,6 +822,79 @@ export function toAnthropicStream(model: string) {
           console.warn("Stream aborted");
           break;
 
+        case "source":
+          // Handle web search source results from Vercel AI SDK
+          if (part.sourceType === "url") {
+            // Use current web search tool ID or generate one if not available
+            const toolUseId = currentWebSearchToolId || `web_search_${uuid()}`;
+
+            // Close text block if open to make room for web search result
+            if (textBlockStarted && !textBlockClosed) {
+              controller.enqueue(
+                encoder.encode(
+                  `event: content_block_stop\ndata: ${JSON.stringify({
+                    type: "content_block_stop",
+                    index: hasTextContent
+                      ? textBlockClosed
+                        ? contentIndex
+                        : 0
+                      : 0,
+                  })}\n\n`
+                )
+              );
+              textBlockClosed = true;
+            }
+
+            contentIndex++;
+
+            // Extract encrypted content from provider metadata if available
+            const anthropicMetadata = part.providerMetadata?.anthropic;
+            const encryptedContent =
+              anthropicMetadata?.encrypted_content ||
+              anthropicMetadata?.content ||
+              part.url; // Fallback to URL
+            const pageAge = anthropicMetadata?.page_age || null;
+
+            // Create web search tool result content block
+            controller.enqueue(
+              encoder.encode(
+                `event: content_block_start\ndata: ${JSON.stringify({
+                  type: "content_block_start",
+                  index: contentIndex,
+                  content_block: {
+                    type: "web_search_tool_result",
+                    tool_use_id: toolUseId,
+                    content: [
+                      {
+                        type: "web_search_result",
+                        url: part.url,
+                        title: part.title,
+                        page_age: pageAge,
+                        encrypted_content: encryptedContent,
+                      },
+                    ],
+                  },
+                })}\n\n`
+              )
+            );
+
+            controller.enqueue(
+              encoder.encode(
+                `event: content_block_stop\ndata: ${JSON.stringify({
+                  type: "content_block_stop",
+                  index: contentIndex,
+                })}\n\n`
+              )
+            );
+          } else {
+            console.warn(
+              "Received source event with unsupported sourceType:",
+              part.sourceType,
+              part
+            );
+          }
+          break;
+
         default:
           // Log unknown event types for debugging
           console.warn("Unknown event type:", part.type, part);
@@ -835,7 +952,6 @@ export function toAnthropicStream(model: string) {
         )
       );
 
-      // Send message_stop
       controller.enqueue(
         encoder.encode(
           `event: message_stop\ndata: ${JSON.stringify({
@@ -844,7 +960,6 @@ export function toAnthropicStream(model: string) {
         )
       );
 
-      // Send final [DONE] marker like Anthropic
       controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
     },
   });
