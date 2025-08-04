@@ -1,91 +1,78 @@
-import { z } from 'zod';
+import { z } from "zod";
 
-
-/**
- * Tool Choice schema matching Anthropic's API specification
- * @see https://docs.anthropic.com/claude/reference/messages_post
- */
 const ToolChoiceSchema = z.union([
-  z.object({ type: z.literal('auto') }),
-  z.object({ type: z.literal('any') }),
-  z.object({ 
-    type: z.literal('tool'), 
-    name: z.string() // Required when type is "tool"
+  z.object({ type: z.literal("auto") }),
+  z.object({ type: z.literal("any") }),
+  z.object({
+    type: z.literal("tool"),
+    name: z.string(),
   }),
 ]);
 
-/**
- * Tool schema matching Anthropic's API specification for both function and system tools
- */
 const ToolSchema = z.union([
   // Function tools with input_schema
   z.object({
     name: z.string().min(1).max(128),
     description: z.string().optional(),
     input_schema: z.object({
-      type: z.literal('object'),
+      type: z.literal("object"),
       properties: z.record(z.string(), z.any()).optional(),
       required: z.array(z.string()).optional(),
     }),
-    cache_control: z.object({ type: z.literal('ephemeral') }).optional(),
+    cache_control: z.object({ type: z.literal("ephemeral") }).optional(),
   }),
   // System tools (computer, bash, text_editor, web_search) without input_schema
   z.object({
     name: z.string().min(1).max(128),
     type: z.string().optional(), // e.g., "computer_20250124", "bash_20241022", etc.
     display_width_px: z.number().optional(),
-    display_height_px: z.number().optional(), 
+    display_height_px: z.number().optional(),
     display_number: z.number().optional(),
     max_uses: z.number().optional(),
     allowed_domains: z.array(z.string()).optional(),
     blocked_domains: z.array(z.string()).optional(),
-    user_location: z.object({
-      type: z.literal('approximate'),
-      city: z.string().optional(),
-      region: z.string().optional(),
-      country: z.string().optional(),
-      timezone: z.string().optional(),
-    }).optional(),
+    user_location: z
+      .object({
+        type: z.literal("approximate"),
+        city: z.string().optional(),
+        region: z.string().optional(),
+        country: z.string().optional(),
+        timezone: z.string().optional(),
+      })
+      .optional(),
   }),
 ]);
 
-/**
- * Content block schemas matching official Anthropic API
- * These represent the different types of content that can be sent in messages
- */
 const TextContentBlockSchema = z.object({
-  type: z.literal('text'),
+  type: z.literal("text"),
   text: z.string(),
-  cache_control: z.object({ type: z.literal('ephemeral') }).optional(),
+  cache_control: z.object({ type: z.literal("ephemeral") }).optional(),
 });
 
 const ImageContentBlockSchema = z.object({
-  type: z.literal('image'),
+  type: z.literal("image"),
   source: z.object({
-    type: z.literal('base64'),
-    media_type: z.enum(['image/jpeg', 'image/png', 'image/gif', 'image/webp']),
+    type: z.literal("base64"),
+    media_type: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
     data: z.string(), // base64 encoded image data
   }),
-  cache_control: z.object({ type: z.literal('ephemeral') }).optional(),
+  cache_control: z.object({ type: z.literal("ephemeral") }).optional(),
 });
 
 const ToolUseContentBlockSchema = z.object({
-  type: z.literal('tool_use'),
+  type: z.literal("tool_use"),
   id: z.string(),
   name: z.string(),
   input: z.record(z.string(), z.any()),
 });
 
 const ToolResultContentBlockSchema = z.object({
-  type: z.literal('tool_result'),
+  type: z.literal("tool_result"),
   tool_use_id: z.string(),
-  content: z.union([z.string(), z.array(z.any())]), // Can be string or array of blocks
+  content: z.union([z.string(), z.array(z.any())]),
   is_error: z.boolean().optional(),
 });
 
-/**
- * Union of all possible content block types in requests
- */
 const ContentBlockSchema = z.union([
   TextContentBlockSchema,
   ImageContentBlockSchema,
@@ -93,33 +80,27 @@ const ContentBlockSchema = z.union([
   ToolResultContentBlockSchema,
 ]);
 
-/**
- * Message schema matching Anthropic's API - supports both string and structured content
- */
 const MessageSchema = z.object({
-  role: z.enum(['user', 'assistant']),
+  role: z.enum(["user", "assistant"]),
   content: z.union([
     z.string(), // Shorthand for [{type: "text", text: string}]
     z.array(ContentBlockSchema), // Array of content blocks
-  ])
+  ]),
 });
 
-/**
- * Optional metadata for tracking and analytics
- */
-const MetadataSchema = z.object({
-  user_id: z.string().max(256).optional(),
-}).optional();
+const MetadataSchema = z
+  .object({
+    user_id: z.string().max(256).optional(),
+  })
+  .optional();
 
-/**
- * Complete Anthropic API request schema based on official specification
- * @see https://docs.anthropic.com/en/api/messages
- */
 export const AnthropicApiRequestSchema = z.object({
   model: z.string().min(1).max(256),
   messages: z.array(MessageSchema).min(1).max(100000), // Up to 100,000 messages per spec
   max_tokens: z.number().int().min(1),
-  system: z.union([z.string(), z.array(z.record(z.string(), z.any()))]).optional(),
+  system: z
+    .union([z.string(), z.array(z.record(z.string(), z.any()))])
+    .optional(),
   temperature: z.number().min(0).max(1).default(1.0).optional(),
   top_p: z.number().min(0).max(1).optional(),
   top_k: z.number().int().min(1).optional(), // ≥1 per specification
@@ -128,25 +109,23 @@ export const AnthropicApiRequestSchema = z.object({
   tools: z.array(ToolSchema).optional(),
   tool_choice: ToolChoiceSchema.optional(),
   metadata: MetadataSchema,
-  service_tier: z.enum(['auto', 'standard_only']).optional(),
+  service_tier: z.enum(["auto", "standard_only"]).optional(),
   extra_headers: z.record(z.string(), z.string()).optional(),
-  thinking: z.object({
-    type: z.literal('enabled'),
-    budget_tokens: z.number().int().min(1024),
-  }).optional(),
+  thinking: z
+    .object({
+      type: z.literal("enabled"),
+      budget_tokens: z.number().int().min(1024),
+    })
+    .optional(),
 });
 
-/**
- * Response content blocks (subset of request content blocks)
- * Only text and tool_use appear in API responses
- */
 const ResponseTextContentBlockSchema = z.object({
-  type: z.literal('text'),
+  type: z.literal("text"),
   text: z.string(),
 });
 
 const ResponseToolUseContentBlockSchema = z.object({
-  type: z.literal('tool_use'),
+  type: z.literal("tool_use"),
   id: z.string(),
   name: z.string(),
   input: z.record(z.string(), z.any()),
@@ -157,9 +136,6 @@ const ResponseContentBlockSchema = z.union([
   ResponseToolUseContentBlockSchema,
 ]);
 
-/**
- * Token usage tracking with optional cache fields for prompt caching
- */
 const UsageSchema = z.object({
   input_tokens: z.number().int().min(0),
   output_tokens: z.number().int().min(0),
@@ -167,26 +143,24 @@ const UsageSchema = z.object({
   cache_read_input_tokens: z.number().int().min(0).optional(),
 });
 
-/**
- * Stop reason enum matching official Anthropic API specification
- */
-const StopReasonSchema = z.enum(['end_turn', 'max_tokens', 'stop_sequence', 'tool_use']).nullable();
+const StopReasonSchema = z
+  .enum(["end_turn", "max_tokens", "stop_sequence", "tool_use"])
+  .nullable();
 
 /**
  * Complete Anthropic API response schema
  * @see https://docs.anthropic.com/claude/reference/messages_post
  */
 export const AnthropicResponseSchema = z.object({
-  id: z.string().min(1), // Required unique message identifier
-  type: z.literal('message'), // Always "message" for responses
-  role: z.literal('assistant'), // Always "assistant" for responses
-  content: z.array(ResponseContentBlockSchema), // Array of response content blocks
-  model: z.string().min(1), // Model identifier used for generation
-  stop_reason: StopReasonSchema, // Why generation stopped
-  stop_sequence: z.string().nullable(), // Matched stop sequence if any
-  usage: UsageSchema, // Token usage information
+  id: z.string().min(1),
+  type: z.literal("message"),
+  role: z.literal("assistant"),
+  content: z.array(ResponseContentBlockSchema),
+  model: z.string().min(1),
+  stop_reason: StopReasonSchema,
+  stop_sequence: z.string().nullable(),
+  usage: UsageSchema,
 });
-
 
 export type AnthropicApiRequest = z.infer<typeof AnthropicApiRequestSchema>;
 export type AnthropicMessage = z.infer<typeof MessageSchema>;

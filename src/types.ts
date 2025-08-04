@@ -6,7 +6,9 @@
 import { JSONSchema7 } from "@ai-sdk/provider";
 import { AnthropicProvider } from "@ai-sdk/anthropic";
 
-export type AnthropicModelId = Parameters<AnthropicProvider['languageModel']>[0]
+export type AnthropicModelId = Parameters<
+  AnthropicProvider["languageModel"]
+>[0];
 
 export type AnthropicMessagesPrompt = {
   system: Array<AnthropicTextContent> | undefined;

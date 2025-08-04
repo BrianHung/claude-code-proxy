@@ -1,37 +1,37 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { v4 as uuid } from "uuid";
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createXai } from "@ai-sdk/xai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
+import { xai } from "@ai-sdk/xai";
 import {
   streamText,
   generateText,
   createProviderRegistry,
   type LanguageModel,
+  type CallSettings,
+  type Prompt,
+  ToolSet,
+  ToolChoice,
+  wrapLanguageModel,
   ModelMessage,
-  Tool,
 } from "ai";
 import { AnthropicApiRequestSchema, AnthropicResponseSchema } from "./schemas";
 import {
-  convertAnthropicToCoreMessages,
-  convertCoreToAnthropicResponse,
-  convertAnthropicTool,
+  toModelMessages,
+  toAnthropicResponse,
+  toTools,
   resolveModelId,
   toAnthropicStream,
+  toToolChoice,
 } from "./convert";
-import type {
-  AnthropicToolChoice,
-  AnthropicModelId,
-  AnthropicTool,
-} from "./types";
+import type { AnthropicTool } from "./types";
 
-const TOOL_CHOICE_MAP = {
-  auto: "auto",
-  any: "required",
-  tool: (name: string) => ({ type: "tool", toolName: name }),
-} as const;
+import type {
+  LanguageModelV2Middleware,
+  LanguageModelV2Prompt,
+} from "@ai-sdk/provider";
 
 const CORS_CONFIG = {
   origin: "*",
@@ -61,49 +61,12 @@ type Bindings = {
   OPUS_MODEL_ID?: string;
 };
 
-/**
- * Convert Anthropic tool choice to AI SDK format using standardized mappings
- */
-function convertAnthropicToolToCoreTool(toolChoice?: AnthropicToolChoice): any {
-  if (!toolChoice) return undefined;
-  switch (toolChoice.type) {
-    case "auto":
-      return TOOL_CHOICE_MAP.auto;
-    case "any":
-      return TOOL_CHOICE_MAP.any;
-    case "tool":
-      return toolChoice.name
-        ? TOOL_CHOICE_MAP.tool(toolChoice.name)
-        : undefined;
-    default:
-      return undefined;
-  }
-}
-
-// Interface for AI SDK options using the types they DO export
-interface AiSdkOptions {
-  model: LanguageModel;
-  messages: ModelMessage[];
-  system?: string;
-  maxTokens?: number;
-  temperature?: number;
-  topP?: number;
-  topK?: number;
-  stopSequences?: string[];
-  tools?: Record<string, Tool>;
-  toolChoice?: any;
-}
-
-// ========== UTILITY FUNCTIONS ==========
-
-/**
- * Debug logging function
- */
-function debug(env: Bindings, ...args: any[]) {
-  if (env.DEBUG === "1" || env.DEBUG === "true") {
-    console.log("[DEBUG]", ...args);
-  }
-}
+type TextOptions = CallSettings &
+  Prompt & {
+    model: LanguageModel;
+    tools?: ToolSet;
+    toolChoice?: ToolChoice<ToolSet>;
+  };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -117,33 +80,6 @@ app.get("/", (c) => {
     version: "1.0.0",
   });
 });
-
-// Create provider registry for clean model resolution
-function createRegistry(env: Bindings) {
-  return createProviderRegistry({
-    // Create providers properly with API keys
-    anthropic: createAnthropic({
-      apiKey: env.ANTHROPIC_API_KEY || "placeholder",
-    }),
-    openai: createOpenAI({
-      apiKey: env.OPENAI_API_KEY || "placeholder",
-      fetch: (...args) => {
-        console.log("🚀 OPENAI FETCH", args);
-        return fetch(...args);
-      },
-    }),
-    google: createGoogleGenerativeAI({
-      apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY || "placeholder",
-    }),
-    xai: createXai({
-      apiKey: env.XAI_API_KEY || "placeholder",
-    }),
-  });
-}
-
-
-
-
 
 interface ErrorResponse {
   type: "error";
@@ -172,6 +108,47 @@ function createErrorResponse(
   };
 }
 
+const anthropicSystemToolCalls = new Set(["WebSearch"]);
+const promptHasSystemToolCall = (prompt: LanguageModelV2Prompt) =>
+  prompt.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.content.some(
+        (part) =>
+          part.type === "tool-call" &&
+          anthropicSystemToolCalls.has(part.toolName)
+      )
+  );
+
+/**
+ * Check if the last message contains an anthropic system tool call.
+ */
+function lastMessageSystemTool(messages: ModelMessage[]) {
+  const last = messages[messages.length - 1];
+  console.log("messages", messages);
+  return false;
+}
+
+/**
+ * Routes requests to Anthropic if the prompt contains a system tool call.
+ * @param env
+ * @returns
+ */
+const anthropicSystemToolCall = (env: Bindings): LanguageModelV2Middleware => ({
+  wrapStream: async function (props) {
+    // TODO: If messages contain an anthropic system tool call, and model is not anthropic
+    // route request to an anthropic model instead.
+    const ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+    const prompt = props.params.prompt;
+
+    if (promptHasSystemToolCall(prompt) && ANTHROPIC_API_KEY) {
+      // Call doStream with original model id.
+    }
+
+    return props.doStream();
+  },
+});
+
 // Claude-compatible messages endpoint
 app.post("/v1/messages", async (c) => {
   try {
@@ -190,9 +167,14 @@ app.post("/v1/messages", async (c) => {
     }
 
     const request = validation.data;
-    const registry = createRegistry(c.env);
+    const registry = createProviderRegistry({
+      anthropic,
+      openai,
+      google,
+      xai,
+    });
+
     const modelId = resolveModelId(request.model, c.env);
-    const model = registry.languageModel(modelId as any);
 
     // Determine which tools are available for this provider
     const isAnthropicProvider = modelId.startsWith("anthropic:");
@@ -214,33 +196,36 @@ app.post("/v1/messages", async (c) => {
       );
     }
 
-    // Convert messages with available tool information
-    const coreMessages = convertAnthropicToCoreMessages(
-      request,
-      availableTools
-    );
-    debug(c.env, "Core messages:", coreMessages);
+    const messages = toModelMessages(request, availableTools);
+    const model = wrapLanguageModel({
+      model: registry.languageModel(modelId as any),
+      middleware: [anthropicSystemToolCall(c.env)],
+      // Override model id if last message contains a system tool call.
+      modelId: lastMessageSystemTool(messages)
+        ? `anthropic:${request.model}`
+        : modelId,
+    });
 
     // Build options object for AI SDK with proper typing
-    const aiSdkOptions: AiSdkOptions = {
+    const options: TextOptions = {
       model,
-      messages: coreMessages,
-      maxTokens: request.max_tokens,
+      messages,
+      maxOutputTokens: request.max_tokens,
       temperature: request.temperature,
       topP: request.top_p,
       topK: request.top_k,
       stopSequences: request.stop_sequences,
-      tools: convertAnthropicTool(request.tools as AnthropicTool[]),
-      toolChoice: convertAnthropicToolToCoreTool(request.tool_choice),
+      tools: toTools(request.tools as AnthropicTool[]),
+      toolChoice: toToolChoice(request.tool_choice),
     };
 
     // Handle system prompt
     if (request.system && typeof request.system === "string") {
-      aiSdkOptions.system = request.system;
+      options.system = request.system;
     }
 
     if (request.stream) {
-      const result = streamText(aiSdkOptions);
+      const result = streamText(options);
       const stream = result.fullStream.pipeThrough(
         toAnthropicStream(request.model)
       );
@@ -248,8 +233,8 @@ app.post("/v1/messages", async (c) => {
         headers: SSE_HEADERS,
       });
     } else {
-      const result = await generateText(aiSdkOptions);
-      const response = convertCoreToAnthropicResponse(
+      const result = await generateText(options);
+      const response = toAnthropicResponse(
         {
           text: result.text,
           toolCalls: result.toolCalls,

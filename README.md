@@ -5,17 +5,20 @@ A Cloudflare Worker proxy that converts Anthropic Claude API requests to Vercel 
 ## Quick Start
 
 ### Prerequisites
+
 - Node.js 18+
 - API key for your preferred provider (OpenAI, Anthropic, etc.)
 
 ### Local Development
+
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/BrianHung/claude-code-proxy
 cd claude-code-proxy
 npm install
 ```
 
 Configure environment variables in `wrangler.toml`:
+
 ```toml
 [vars]
 OPENAI_API_KEY = "your-openai-key"
@@ -26,17 +29,20 @@ DEBUG = "true"
 ```
 
 Start the proxy:
+
 ```bash
 npm run dev
 ```
 
 Use with Claude CLI:
+
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8787
 claude "Hello world"
 ```
 
 ### Deploy to Cloudflare
+
 ```bash
 npx wrangler login
 npx wrangler secret put OPENAI_API_KEY
@@ -50,22 +56,24 @@ npm run deploy
 
 The proxy maps Claude model requests to your configured models:
 
-| Claude Model | Maps To | Environment Variable |
-|--------------|---------|---------------------|
-| claude-*-haiku-* | HAIKU_MODEL_ID | Default: `openai:gpt-4o-mini` |
-| claude-*-sonnet-* | SONNET_MODEL_ID | Default: `openai:gpt-4o-mini` |
-| claude-*-opus-* | OPUS_MODEL_ID | Default: `openai:gpt-4o-mini` |
+| Claude Model      | Maps To         | Environment Variable          |
+| ----------------- | --------------- | ----------------------------- |
+| claude-_-haiku-_  | HAIKU_MODEL_ID  | Default: `openai:gpt-4o-mini` |
+| claude-_-sonnet-_ | SONNET_MODEL_ID | Default: `openai:gpt-4o-mini` |
+| claude-_-opus-_   | OPUS_MODEL_ID   | Default: `openai:gpt-4o-mini` |
 
 ### Configuration Examples
 
 **OpenAI models:**
+
 ```toml
 HAIKU_MODEL_ID = "openai:gpt-4o-mini"
-SONNET_MODEL_ID = "openai:gpt-4o-mini" 
+SONNET_MODEL_ID = "openai:gpt-4o-mini"
 OPUS_MODEL_ID = "openai:gpt-4o-mini"
 ```
 
 **Anthropic models:**
+
 ```toml
 HAIKU_MODEL_ID = "anthropic:claude-3-5-haiku-20241022"
 SONNET_MODEL_ID = "anthropic:claude-3-5-sonnet-20241022"
@@ -73,6 +81,7 @@ OPUS_MODEL_ID = "anthropic:claude-3-opus-20240229"
 ```
 
 **Mixed providers:**
+
 ```toml
 HAIKU_MODEL_ID = "openai:gpt-4o-mini"
 SONNET_MODEL_ID = "anthropic:claude-3-5-sonnet-20241022"
@@ -82,6 +91,7 @@ OPUS_MODEL_ID = "openai:gpt-4o"
 ## API Usage
 
 ### Basic Request
+
 ```bash
 curl -X POST http://localhost:8787/v1/messages \
   -H "Content-Type: application/json" \
@@ -93,6 +103,7 @@ curl -X POST http://localhost:8787/v1/messages \
 ```
 
 ### Streaming
+
 ```bash
 curl -X POST http://localhost:8787/v1/messages \
   -H "Content-Type: application/json" \
@@ -107,6 +118,7 @@ curl -X POST http://localhost:8787/v1/messages \
 ## Limitations
 
 **Unsupported Features:**
+
 - Websearch and other Anthropic system tools are not supported at this time
 - Computer use tools are not supported
 - Some advanced Anthropic-specific features may not work correctly when proxied to other providers
@@ -115,11 +127,11 @@ curl -X POST http://localhost:8787/v1/messages \
 
 ```bash
 npm run dev        # Start local development server (port 8787)
-npm run deploy     # Deploy to Cloudflare Workers  
+npm run deploy     # Deploy to Cloudflare Workers
 npm test          # Run test suite
 npm run build     # Build the worker bundle
 ```
 
 ## License
 
-MIT 
+MIT
