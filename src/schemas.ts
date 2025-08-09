@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "zod/v4";
 
 const ToolChoiceSchema = z.union([
   z.object({ type: z.literal("auto") }),
