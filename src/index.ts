@@ -9,11 +9,7 @@ import {
   streamText,
   generateText,
   createProviderRegistry,
-  type LanguageModel,
-  type CallSettings,
-  type Prompt,
-  ToolSet,
-  ToolChoice,
+  wrapLanguageModel,
 } from "ai";
 import { AnthropicApiRequestSchema, AnthropicResponseSchema } from "./schemas";
 import {
@@ -24,7 +20,12 @@ import {
   toAnthropicStream,
   toToolChoice,
 } from "./convert";
-import type { AnthropicTool } from "./types";
+import type { AnthropicTool } from "./anthropic-types";
+import {
+  webSearchMiddleware as webSearch,
+  webFetchMiddleware as webFetch,
+} from "./tool-middleware";
+import type { Bindings, TextOptions, MiddlewareOptions } from "./types";
 
 const CORS_CONFIG = {
   origin: "*",
@@ -42,26 +43,6 @@ const SSE_HEADERS = {
   "Cache-Control": "no-cache",
   Connection: "keep-alive",
 } as const;
-
-type Bindings = {
-  DEBUG?: string;
-
-  ANTHROPIC_API_KEY?: string;
-  ANTHROPIC_BASE_URL?: string;
-
-  OPENAI_API_KEY?: string;
-  OPENAI_BASE_URL?: string;
-
-  GOOGLE_GENERATIVE_AI_API_KEY?: string;
-  GOOGLE_GENERATIVE_AI_BASE_URL?: string;
-
-  XAI_API_KEY?: string;
-  XAI_BASE_URL?: string;
-
-  HAIKU_MODEL_ID?: string;
-  SONNET_MODEL_ID?: string;
-  OPUS_MODEL_ID?: string;
-};
 
 /**
  * List of all supported providers and their configuration options:
@@ -86,13 +67,6 @@ const modelProviders = (env: Bindings) =>
       baseURL: env.XAI_BASE_URL,
     }),
   });
-
-type TextOptions = CallSettings &
-  Prompt & {
-    model: LanguageModel;
-    tools?: ToolSet;
-    toolChoice?: ToolChoice<ToolSet>;
-  };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -148,33 +122,22 @@ app.post("/v1/messages", async (c) => {
     const availableTools = new Set<string>(
       (request.tools ?? []).map((tool) => tool.name)
     );
+
+    const middlewareOptions: MiddlewareOptions = {
+      modelId: `anthropic:${request.model}`,
+      overrideModelId: modelId,
+      providers,
+      env: c.env,
+    };
+
     const messages = toModelMessages(request, availableTools);
-
     const tools = toTools(request.tools as AnthropicTool[]);
-    const hasServerTool = Object.keys(tools.server).length > 0;
-    const overrideModelId =
-      hasServerTool && Boolean(c.env.ANTHROPIC_API_KEY)
-        ? `anthropic:${request.model}`
-        : modelId;
-
-    if (hasServerTool) {
-      if (overrideModelId !== modelId) {
-        console.warn(
-          `${modelId} does not support server tools. Routing request to Anthropic model ${overrideModelId} instead for: ${Object.keys(
-            tools.server
-          ).join(", ")}`
-        );
-      } else {
-        console.warn(
-          "Anthropic API key not configured. Server tools will not natively work.",
-          Object.keys(tools.server).join(", ")
-        );
-      }
-    }
-
-    const model = providers.languageModel(overrideModelId as any);
+    const model = providers.languageModel(modelId as any);
     const options: TextOptions = {
-      model,
+      model: wrapLanguageModel({
+        model,
+        middleware: [webFetch, webSearch].map((m) => m(middlewareOptions)),
+      }),
       messages,
       maxOutputTokens: request.max_tokens,
       temperature: request.temperature,

@@ -21,7 +21,8 @@ import type {
   AnthropicTool,
   AnthropicModelId,
   AnthropicToolChoice,
-} from "./types";
+} from "./anthropic-types";
+import { Bindings } from "./types";
 
 export {
   type AnthropicResponse,
@@ -156,7 +157,6 @@ function processAssistantContentBlocks(
   availableTools?: Set<string>
 ): (TextPart | ToolCallPart)[] {
   const assistantContent: (TextPart | ToolCallPart)[] = [];
-  const seenToolIds = new Set<string>();
 
   for (const block of content) {
     if (block.type === "text") {
@@ -169,15 +169,6 @@ function processAssistantContentBlocks(
         );
         continue;
       }
-
-      // Prevent duplicate tool calls with the same ID
-      if (seenToolIds.has(block.id)) {
-        console.warn(
-          `[CONVERT] Skipping duplicate tool call with ID: ${block.id}`
-        );
-        continue;
-      }
-      seenToolIds.add(block.id);
 
       const toolCallPart: ToolCallPart = {
         type: "tool-call",
@@ -472,11 +463,7 @@ export function toTools(tools: AnthropicTool[] = []): {
  * via environment variable configuration for cost optimization or availability
  */
 export function resolveModelId(
-  modelOverrides: {
-    HAIKU_MODEL_ID?: string;
-    SONNET_MODEL_ID?: string;
-    OPUS_MODEL_ID?: string;
-  },
+  modelOverrides: Bindings,
   modelId: AnthropicModelId
 ): string {
   const overrides: Array<[string, string | undefined]> = [
@@ -511,9 +498,6 @@ export function toAnthropicStream(model: string) {
   let textBlockStarted = false;
   let textBlockClosed = false;
   let hasTextContent = false;
-
-  // Track tool IDs to prevent duplicates
-  const seenToolIds = new Set<string>();
 
   return new TransformStream({
     start(controller: TransformStreamDefaultController<Uint8Array>) {
@@ -648,14 +632,6 @@ export function toAnthropicStream(model: string) {
         case "tool-input-start":
           const toolInputId = part.id;
 
-          // Skip if we've already seen this tool ID (prefer complete tool-call over streaming)
-          if (seenToolIds.has(toolInputId)) {
-            console.warn(
-              `[STREAM] Skipping duplicate tool-input-start for ID: ${toolInputId}`
-            );
-            break;
-          }
-
           // Close text block if open
           if (textBlockStarted && !textBlockClosed) {
             controller.enqueue(
@@ -674,7 +650,6 @@ export function toAnthropicStream(model: string) {
           }
 
           contentIndex++;
-          seenToolIds.add(toolInputId);
           controller.enqueue(
             encoder.encode(
               `event: content_block_start\ndata: ${JSON.stringify({
@@ -729,14 +704,6 @@ export function toAnthropicStream(model: string) {
           // Complete tool call (non-streaming)
           const toolCallId = part.toolCallId;
 
-          // Skip if we've already seen this tool ID
-          if (seenToolIds.has(toolCallId)) {
-            console.warn(
-              `[STREAM] Skipping duplicate tool-call for ID: ${toolCallId}`
-            );
-            break;
-          }
-
           // Close text block if open
           if (textBlockStarted && !textBlockClosed) {
             controller.enqueue(
@@ -755,7 +722,6 @@ export function toAnthropicStream(model: string) {
           }
 
           contentIndex++;
-          seenToolIds.add(toolCallId);
 
           // Track web search tool calls for source event association
           if (part.toolName === "web_search") {
@@ -799,6 +765,9 @@ export function toAnthropicStream(model: string) {
 
         case "start":
           // Stream is starting
+          break;
+
+        case "start-step":
           break;
 
         case "finish":
